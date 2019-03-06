@@ -160,6 +160,7 @@ fun BaseGradleBuildType.gradleRunnerStep(model: CIBuildModel, gradleTasks: Strin
                             "-PteamCityUsername=%teamcity.username.restbot%" +
                             "-PteamCityPassword=%teamcity.password.restbot%" +
                             "-PteamCityBuildId=%teamcity.build.id%" +
+                            "-PbuildStep=GRADLERUNNER" +
                             buildScanTags.map { configurations.buildScanTag(it) }
                     ).joinToString(separator = " ")
         }
@@ -183,6 +184,7 @@ fun BaseGradleBuildType.gradleRerunnerStep(model: CIBuildModel, gradleTasks: Str
                             "-PteamCityPassword=%teamcity.password.restbot%" +
                             "-PteamCityBuildId=%teamcity.build.id%" +
                             buildScanTags.map { configurations.buildScanTag(it) } +
+                            "-PbuildStep=GRADLE_RERUNNER" +
                             "-PonlyPreviousFailedTestClasses=true"
                     ).joinToString(separator = " ")
         }
