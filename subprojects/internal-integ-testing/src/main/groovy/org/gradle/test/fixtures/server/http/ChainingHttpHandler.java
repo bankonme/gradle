@@ -24,7 +24,6 @@ import org.gradle.internal.exceptions.DefaultMultiCauseException;
 import org.gradle.internal.time.Clock;
 import org.gradle.internal.time.Time;
 
-import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -111,23 +110,26 @@ class ChainingHttpHandler implements HttpHandler {
             System.out.println(String.format("[%d] handling %s", id, outcome.getDisplayName()));
 
             try {
-                ResponseProducer responseProducer = selectProducer(id, httpExchange, outcome);
-                if (responseProducer != null) {
+                ResponseProducer responseProducer = selectProducer(id, httpExchange);
+                if (!responseProducer.isFailure()) {
                     System.out.println(String.format("[%d] sending response for %s", id, outcome.getDisplayName()));
                     responseProducer.writeTo(id, httpExchange);
                 } else {
-                    System.out.println(String.format("[%d] sending error response for unexpected request", id));
+                    System.out.println(String.format("[%d] sending error response for %s", id, outcome.getDisplayName()));
+                    Throwable failure = responseProducer.getFailure();
+                    requestFailed(outcome, failure);
+                    int httpCode = failure instanceof UnexpectedRequestException ? 400 : 500;
                     if (outcome.method.equals("HEAD")) {
-                        httpExchange.sendResponseHeaders(500, -1);
+                        httpExchange.sendResponseHeaders(httpCode, -1);
                     } else {
                         byte[] message = String.format("Failed request %s", outcome.getDisplayName()).getBytes(Charsets.UTF_8);
-                        httpExchange.sendResponseHeaders(500, message.length);
+                        httpExchange.sendResponseHeaders(httpCode, message.length);
                         httpExchange.getResponseBody().write(message);
                     }
                 }
             } catch (Throwable t) {
                 System.out.println(String.format("[%d] handling %s failed with exception", id, outcome.getDisplayName()));
-                requestFailed(outcome, t);
+                requestFailed(outcome, new AssertionError(String.format("Failed to handle %s", outcome.getDisplayName()), t));
             } finally {
                 requestCompleted(outcome);
             }
@@ -152,7 +154,7 @@ class ChainingHttpHandler implements HttpHandler {
         lock.lock();
         try {
             if (outcome.failure == null) {
-                outcome.failure = new AssertionError(String.format("Failed to handle %s", outcome.getDisplayName()), t);
+                outcome.failure = t;
             }
         } finally {
             lock.unlock();
@@ -163,18 +165,14 @@ class ChainingHttpHandler implements HttpHandler {
         outcome.completed();
     }
 
-    /**
-     * Returns null on failure.
-     */
-    @Nullable
-    private ResponseProducer selectProducer(int id, HttpExchange httpExchange, RequestOutcome outcome) {
+    private ResponseProducer selectProducer(int id, HttpExchange httpExchange) {
         lock.lock();
         try {
             requestsStarted++;
             condition.signalAll();
             if (completed) {
                 System.out.println(String.format("[%d] received request %s %s after HTTP server has stopped.", id, httpExchange.getRequestMethod(), httpExchange.getRequestURI()));
-                return null;
+                return new UnexpectedRequestFailure(httpExchange.getRequestMethod(), httpExchange.getRequestURI().getPath());
             }
             for (TrackingHttpHandler handler : handlers) {
                 ResponseProducer responseProducer = handler.selectResponseProducer(id, httpExchange);
@@ -182,15 +180,10 @@ class ChainingHttpHandler implements HttpHandler {
                     return responseProducer;
                 }
             }
-            System.out.println(String.format("[%d] unexpected request %s %s", id, httpExchange.getRequestMethod(), httpExchange.getRequestURI()));
-            outcome.failure = new AssertionError(String.format("Received unexpected request %s %s", httpExchange.getRequestMethod(), httpExchange.getRequestURI().getPath()));
-        } catch (Throwable t) {
-            System.out.println(String.format("[%d] error during handling of request %s %s", id, httpExchange.getRequestMethod(), httpExchange.getRequestURI()));
-            outcome.failure = new AssertionError(String.format("Failed to handle %s %s", httpExchange.getRequestMethod(), httpExchange.getRequestURI().getPath()), t);
+            return new UnexpectedRequestFailure(httpExchange.getRequestMethod(), httpExchange.getRequestURI().getPath());
         } finally {
             lock.unlock();
         }
-        return null;
     }
 
     void waitForRequests(int requestCount) {
